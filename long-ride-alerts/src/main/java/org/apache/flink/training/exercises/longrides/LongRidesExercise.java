@@ -21,7 +21,11 @@ package org.apache.flink.training.exercises.longrides;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.JobExecutionResult;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
+import org.apache.flink.api.common.state.ValueState;
+import org.apache.flink.api.common.state.ValueStateDescriptor;
+import org.apache.flink.api.common.time.Time;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.streaming.api.TimerService;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.KeyedProcessFunction;
@@ -98,17 +102,61 @@ public class LongRidesExercise {
     @VisibleForTesting
     public static class AlertFunction extends KeyedProcessFunction<Long, TaxiRide, Long> {
 
+        private transient ValueState<Long> targetDuration;
+
         @Override
         public void open(Configuration config) throws Exception {
-            throw new MissingSolutionException();
+            ValueStateDescriptor<Long> desc = new ValueStateDescriptor<Long>("targetDuration", Long.class);
+            targetDuration = getRuntimeContext().getState(desc);
         }
 
         @Override
         public void processElement(TaxiRide ride, Context context, Collector<Long> out)
-                throws Exception {}
+                throws Exception {
+
+            // state value will either hold startTime + 2hours, or endTime.
+
+            // on receiving start events,
+            // if state == null, start a timer for 2 hours from eventTime and set the same as the state.
+            // else check if endTime <= startTime + 2hours and write to out if false. Clear state.
+
+            // on receiving end events,
+            // if state == null, set state as endTime.
+            // else check if endTime <= state and write to out if false.
+
+            if (ride.isStart) {
+                if(targetDuration.value() == null) {
+                    TimerService timerService = context.timerService();
+                    long target = ride.eventTime.plusSeconds(120 * 60).toEpochMilli();
+                    timerService.registerEventTimeTimer(target);
+                    targetDuration.update(target);
+                } else {
+                    if (ride.getEventTimeMillis() + Time.hours(2).toMilliseconds() <= targetDuration.value()) {
+                        out.collect(ride.rideId);
+                        targetDuration.clear();
+                    }
+                }
+            } else {
+                if(targetDuration.value() == null) {
+                    targetDuration.update(ride.getEventTimeMillis());
+                } else {
+                    // start event had already come earlier.
+                    context.timerService().deleteEventTimeTimer(targetDuration.value());
+                    if(ride.getEventTimeMillis() > targetDuration.value()) {
+                        out.collect(ride.rideId);
+                    }
+                    targetDuration.clear();
+                }
+            }
+        }
 
         @Override
         public void onTimer(long timestamp, OnTimerContext context, Collector<Long> out)
-                throws Exception {}
+                throws Exception {
+            // on timer fire, write context.getCurrentKey to out.
+            long key = context.getCurrentKey();
+            out.collect(key);
+            targetDuration.clear();
+        }
     }
 }

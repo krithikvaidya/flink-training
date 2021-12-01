@@ -18,7 +18,13 @@
 
 package org.apache.flink.training.exercises.ridesandfares;
 
+import jdk.jfr.ValueDescriptor;
 import org.apache.flink.api.common.JobExecutionResult;
+import org.apache.flink.api.common.state.ValueState;
+import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.api.common.typeinfo.TypeHint;
+import org.apache.flink.api.common.state.ValueStateDescriptor;
+import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
@@ -99,19 +105,58 @@ public class RidesAndFaresExercise {
     public static class EnrichmentFunction
             extends RichCoFlatMapFunction<TaxiRide, TaxiFare, RideAndFare> {
 
+        private transient ValueState<Tuple2<TaxiRide, TaxiFare>> rides;
+
         @Override
         public void open(Configuration config) throws Exception {
-            throw new MissingSolutionException();
+
+            ValueStateDescriptor<Tuple2<TaxiRide, TaxiFare>> descriptor =
+                    new ValueStateDescriptor(
+                            "rides",
+                            TypeInformation.of(new TypeHint<Tuple2<TaxiRide, TaxiFare>>() {}),
+                            Tuple2.of(null, null)
+                    );
+
+            rides = getRuntimeContext().getState(descriptor);
         }
 
         @Override
         public void flatMap1(TaxiRide ride, Collector<RideAndFare> out) throws Exception {
-            throw new MissingSolutionException();
+
+            // access the state value by key
+            Tuple2<TaxiRide, TaxiFare> currentState = rides.value();
+
+            // update the local state variable value
+            currentState.f0 = ride;
+
+            // update the global state
+            rides.update(currentState);
+
+            // clear value with that key from state
+            if (currentState.f1 != null) {
+                out.collect(new RideAndFare(currentState.f0, currentState.f1));
+                rides.clear();
+            }
         }
 
         @Override
         public void flatMap2(TaxiFare fare, Collector<RideAndFare> out) throws Exception {
-            throw new MissingSolutionException();
+
+            // access the state value by key
+            Tuple2<TaxiRide, TaxiFare> currentState = rides.value();
+
+            // update the local state variable value
+            currentState.f1 = fare;
+
+            // update the global state
+            rides.update(currentState);
+
+            // clear value with that key from state
+            if (currentState.f0 != null) {
+                out.collect(new RideAndFare(currentState.f0, currentState.f1));
+                rides.clear();
+            }
+
         }
     }
 }
